@@ -6,8 +6,8 @@ cd Bnakai
 ```
 ---------
 ## Important 
-**replace your in .env file**
-SWIFT_PHONE_NUMBER=PUT_YOUR_NUMBER
+**replace The Number in .env file By Your Numer**
+**SWIFT_PHONE_NUMBER=PUT_YOUR_NUMBER**
 
 --------
 ```text
