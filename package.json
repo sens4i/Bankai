@@ -1,0 +1,27 @@
+{
+  "name": "bankai",
+  "version": "0.1.0",
+  "description": "WhatsApp broadcast automation, using Knight Bot's device-linking implementation as its locked auth/connection foundation.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:pairing-code": "node index.js --pairing-code",
+    "dev": "nodemon index.js",
+    "dev:pairing-code": "nodemon index.js -- --pairing-code"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^v7.0.0-rc.9",
+    "@hapi/boom": "^10.0.1",
+    "awesome-phonenumber": "^5.9.0",
+    "dotenv": "^16.4.5",
+    "node-cache": "^5.1.2",
+    "pino": "^8.21.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "ISC"
+}
