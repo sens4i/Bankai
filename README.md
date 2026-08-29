@@ -1,12 +1,12 @@
-## Bankai Automation System 
+## Bankai Automation System 🫟
 **Installation**
 ```text
 git clone https://github.com/sens4i/Bankai.git
 cd Bnakai
 ```
 ---------
-**note**
-replace your in .env file 
+## Important 
+**replace your in .env file**
 SWIFT_PHONE_NUMBER=PUT_YOUR_NUMBER
 
 --------
