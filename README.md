@@ -11,18 +11,31 @@
   <br>
   <b>MaRO EL BaSHa</b>
   <br>
-  <sub>Creator & Maintainer</sub>
+  <sub>Developer</sub>
 </p>
 
 ---
 
-**Bankai Automation System** is a robust, modular engine engineered for seamless WhatsApp group management, media delivery, and automated workflows.
+**Bankai Automation System** is a Smart WA Sender
 
 ---
 
-## 🚀 Quick Start & Installation
+## Quick Start & Installation
 
 ### 1. Clone the Repository
 ```bash
 git clone [https://github.com/sens4i/Bankai.git](https://github.com/sens4i/Bankai.git)
 cd Bankai
+```
+### 2. Install Dependencies
+```bash
+npm  install
+```
+---
+## Important
+### Don't Forget Puting Your Number in .env file
+---
+### 3. Start the System
+```bash
+npm start
+```
