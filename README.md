@@ -24,7 +24,7 @@
 
 ### 1. Clone the Repository
 ```bash
-git clone [https://github.com/sens4i/Bankai.git](https://github.com/sens4i/Bankai.git)
+git clone https://github.com/sens4i/Bankai.git
 cd Bankai
 ```
 ### 2. Install Dependencies
