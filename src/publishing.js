@@ -1,35 +1,3 @@
-/**
- * Swift — Publishing System (Swift + Bankai)
- *
- * Two independent, file-backed broadcast channels layered on top of the
- * existing (locked) WhatsApp connection. Nothing here touches auth,
- * session, or the socket lifecycle — it only listens to messages.upsert
- * on the socket it's given and calls sock.sendMessage().
- *
- *   .swift   -> view/update SwiftKey.txt   (self-chat only)
- *   ..        -> publish SwiftKey.txt, one message per non-empty line
- *
- *   .bankai  -> view/update bankai.txt     (self-chat only)
- *   ....      -> publish bankai.txt, one message per non-empty line
- *
- *   .menu    -> beginner-friendly numbered menu (self-chat only). Reply
- *               with just a digit to run that option — no commands to
- *               remember. (Native WhatsApp "tap" buttons were skipped on
- *               purpose: WhatsApp deprecated that API for personal
- *               accounts, so buttons frequently fail to render. A
- *               numbered reply works on every client.)
- *
- * If the target file is empty when a trigger fires, Swift sends a
- * heads-up to the bot's own self-chat instead of silently doing nothing,
- * so the owner notices and can configure it.
- *
- * Execution triggers (.. / ....) are restricted to the bot's own account
- * (fromMe), same as the config commands. That's a deliberate default —
- * an unauthenticated group member typing ".." should not be able to
- * blast the configured content into a group. If you want any group
- * member to be able to trigger publishing, relax the `fromMe` check in
- * handleExecutionTrigger() below.
- */
 const fs = require('fs')
 const path = require('path')
 const logger = require('./logger')

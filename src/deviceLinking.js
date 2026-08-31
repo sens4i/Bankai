@@ -1,8 +1,8 @@
 const { Boom } = require('@hapi/boom')
 const { rmSync } = require('fs')
-const readline = require('readline')
 const NodeCache = require('node-cache')
 const pino = require('pino')
+const readline = require('readline')
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -15,8 +15,6 @@ const {
 const config = require('./config')
 const logger = require('./logger')
 
-// Connection lifecycle states, tracked alongside (not instead of) Baileys'
-// own connection.update events. Purely additive bookkeeping.
 const STATE = {
   IDLE: 'IDLE',
   LINKING: 'LINKING',
@@ -27,33 +25,29 @@ const STATE = {
   RECONNECTING: 'RECONNECTING',
 }
 
-/**
- * Prompt for a phone number on the terminal, if one wasn't supplied via
- * config/env and we're in an interactive TTY. Falls back to config value
- * in non-interactive environments (e.g. running under a process manager).
- */
-function makeQuestion() {
-  const rl = process.stdin.isTTY
-    ? readline.createInterface({ input: process.stdin, output: process.stdout })
-    : null
+const groupMetadataCache = new NodeCache({
+  stdTTL: 5 * 60,
+  useClones: false,
+})
 
-  return (text) => {
-    if (rl) {
-      return new Promise((resolve) => rl.question(text, resolve))
-    }
-    return Promise.resolve(config.phoneNumber)
-  }
+function askPhoneNumber() {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    })
+
+    rl.question('WhatsApp Number: ', (answer) => {
+      rl.close()
+      resolve(answer.trim())
+    })
+  })
 }
 
-/**
- * Starts (or restarts, on reconnect) the WhatsApp socket, wires up
- * device linking / pairing, session persistence, and the reconnect
- * loop. Returns the live socket instance.
- *
- * onStateChange(state) is called whenever Swift's lifecycle state changes.
- * onReady(sock) is called once the connection reaches READY (i.e. 'open').
- */
-async function startDeviceLinking({ onStateChange = () => {}, onReady = () => {} } = {}) {
+async function startDeviceLinking({
+  onStateChange = () => {},
+  onReady = () => {},
+} = {}) {
   const setState = (s) => {
     logger.debug(`state -> ${s}`)
     onStateChange(s)
@@ -66,73 +60,129 @@ async function startDeviceLinking({ onStateChange = () => {}, onReady = () => {}
     const { state, saveCreds } = await useMultiFileAuthState(config.sessionPath)
     const msgRetryCounterCache = new NodeCache()
 
-    // Matches Knight's original condition exactly: pairing-code mode is
-    // chosen when a phone number is configured (or --pairing-code is
-    // passed), regardless of registration state. If neither applies,
-    // Swift falls back to QR, same as the reference.
-    const pairingCode = !!config.phoneNumber || process.argv.includes('--pairing-code')
+    const needsLinking = !state.creds?.registered
+
+    let phoneNumber = null
+
+    // ============================================================
+    // FIRST RUN ONLY:
+    // Ask for the WhatsApp number directly from the terminal.
+    // ============================================================
+    if (needsLinking) {
+      phoneNumber = await askPhoneNumber()
+      phoneNumber = phoneNumber.replace(/[^0-9]/g, '')
+
+      const pn = require('awesome-phonenumber')
+
+      if (!pn('+' + phoneNumber).isValid()) {
+        logger.error(
+          'Invalid phone number. Use the full international number without + or spaces.'
+        )
+        process.exit(1)
+      }
+    }
+
+    const pairingCode = needsLinking
 
     const sock = makeWASocket({
       version,
       logger: pino({ level: 'silent' }),
       printQRInTerminal: !pairingCode,
       browser: config.browser,
+
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }).child({ level: 'fatal' })),
+        keys: makeCacheableSignalKeyStore(
+          state.keys,
+          pino({ level: 'fatal' }).child({ level: 'fatal' })
+        ),
       },
+
       markOnlineOnConnect: config.markOnlineOnConnect,
-      generateHighQualityLinkPreview: config.generateHighQualityLinkPreview,
+      generateHighQualityLinkPreview:
+        config.generateHighQualityLinkPreview,
       syncFullHistory: config.syncFullHistory,
-      // Swift has no message store; retry-decrypt lookups simply miss.
+
       getMessage: async () => undefined,
+
       msgRetryCounterCache,
+
+      cachedGroupMetadata: async (jid) =>
+        groupMetadataCache.get(jid),
+
       defaultQueryTimeoutMs: config.defaultQueryTimeoutMs,
       connectTimeoutMs: config.connectTimeoutMs,
       keepAliveIntervalMs: config.keepAliveIntervalMs,
     })
 
-    // Session persistence: save credentials whenever Baileys updates them.
     sock.ev.on('creds.update', saveCreds)
 
-    // --- Device Linking / Pairing Code ---------------------------------
-    if (pairingCode && !sock.authState?.creds?.registered) {
-      setState(STATE.LINKING)
+    sock.ev.on('groups.update', async (updates) => {
+      for (const update of updates) {
+        if (!update.id) continue
 
-      let phoneNumber = config.phoneNumber
-      const question = makeQuestion()
-      if (!phoneNumber) {
-        phoneNumber = await question(
-          'Please type your WhatsApp number \nFormat: 2010XXXXXX (without + or spaces) : '
+        try {
+          groupMetadataCache.set(
+            update.id,
+            await sock.groupMetadata(update.id)
+          )
+        } catch (err) {
+          logger.error(
+            `Failed to refresh cached metadata for group ${update.id}.`,
+            err
+          )
+        }
+      }
+    })
+
+    sock.ev.on('group-participants.update', async (event) => {
+      if (!event.id) return
+
+      try {
+        groupMetadataCache.set(
+          event.id,
+          await sock.groupMetadata(event.id)
+        )
+      } catch (err) {
+        logger.error(
+          `Failed to refresh cached metadata for group ${event.id}.`,
+          err
         )
       }
+    })
 
-      phoneNumber = String(phoneNumber).replace(/[^0-9]/g, '')
-
-      const pn = require('awesome-phonenumber')
-      if (!pn('+' + phoneNumber).isValid()) {
-        logger.error('Invalid phone number. Provide the full international number without + or spaces.')
-        process.exit(1)
-      }
+    // ============================================================
+    // PAIRING CODE
+    // ============================================================
+    if (pairingCode) {
+      setState(STATE.LINKING)
 
       setTimeout(async () => {
         try {
           let code = await sock.requestPairingCode(phoneNumber)
+
           code = code?.match(/.{1,4}/g)?.join('-') || code
+
           logger.info(`Pairing code: ${code}`)
-          logger.info('Enter this code in WhatsApp: Settings > Linked Devices > Link a Device')
+          logger.info(
+            'Enter this code in WhatsApp: Settings > Linked Devices > Link a Device'
+          )
         } catch (error) {
           logger.error('Failed to request pairing code.', error)
         }
       }, 3000)
     }
 
-    // --- Connection lifecycle ------------------------------------------
+    // ============================================================
+    // CONNECTION LIFECYCLE
+    // ============================================================
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update
 
       if (qr) {
-        logger.info('QR code generated. Scan with WhatsApp if not using pairing code.')
+        logger.info(
+          'QR code generated. Scan with WhatsApp if not using pairing code.'
+        )
       }
 
       if (connection === 'connecting') {
@@ -142,25 +192,57 @@ async function startDeviceLinking({ onStateChange = () => {}, onReady = () => {}
       if (connection === 'open') {
         setState(STATE.CONNECTED)
         logger.info('Device connected.')
+
+        try {
+          const allGroups = await sock.groupFetchAllParticipating()
+
+          for (const [jid, metadata] of Object.entries(allGroups)) {
+            groupMetadataCache.set(jid, metadata)
+          }
+
+          logger.info(
+            `Cached metadata for ${Object.keys(allGroups).length} group(s).`
+          )
+        } catch (err) {
+          logger.error(
+            'Failed to pre-cache group metadata (non-fatal — will fetch lazily instead).',
+            err
+          )
+        }
+
         setState(STATE.READY)
-        logger.info('Swift is ready.')
+        logger.info('Bankai is ready.')
         onReady(sock)
       }
 
       if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error instanceof Boom)
-          ? lastDisconnect.error.output?.statusCode
-          : lastDisconnect?.error?.output?.statusCode
+        const statusCode =
+          lastDisconnect?.error instanceof Boom
+            ? lastDisconnect.error.output?.statusCode
+            : lastDisconnect?.error?.output?.statusCode
 
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+        const shouldReconnect =
+          statusCode !== DisconnectReason.loggedOut
 
         setState(STATE.DISCONNECTED)
-        logger.warn(`Connection lost (status ${statusCode ?? 'unknown'}).`)
 
-        if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+        logger.warn(
+          `Connection lost (status ${statusCode ?? 'unknown'}).`
+        )
+
+        if (
+          statusCode === DisconnectReason.loggedOut ||
+          statusCode === 401
+        ) {
           try {
-            rmSync(config.sessionPath, { recursive: true, force: true })
-            logger.warn('Session invalidated (logged out). Removed local session; re-linking required.')
+            rmSync(config.sessionPath, {
+              recursive: true,
+              force: true,
+            })
+
+            logger.warn(
+              'Session invalidated (logged out). Removed local session; re-linking required.'
+            )
           } catch (error) {
             logger.error('Error deleting session.', error)
           }
@@ -169,6 +251,7 @@ async function startDeviceLinking({ onStateChange = () => {}, onReady = () => {}
         if (shouldReconnect) {
           setState(STATE.RECONNECTING)
           logger.info('Reconnecting...')
+
           await delay(config.reconnectDelayMs)
           connect()
         }
@@ -181,4 +264,8 @@ async function startDeviceLinking({ onStateChange = () => {}, onReady = () => {}
   return connect()
 }
 
-module.exports = { startDeviceLinking, STATE }
+module.exports = {
+  startDeviceLinking,
+  STATE,
+}
+

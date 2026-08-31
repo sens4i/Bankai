@@ -9,24 +9,24 @@ const logger = require('./logger')
 
 const SETTINGS_FILE = path.join(__dirname, '..', 'settings.json')
 
+// 1 minute floor — deliberately chosen so the tool is structurally
+// incapable of rapid-fire sending, regardless of what anyone sets.
+// 10 minutes ceiling — a real cap, nowhere near "leave it for an hour".
+const MIN_DELAY_SECONDS = 0.1
+const MAX_DELAY_SECONDS = 600
+
 const DEFAULTS = {
-  delaySeconds: 3,
+  delaySeconds: MIN_DELAY_SECONDS,
+  enabled: true, // gates the .... execution trigger; toggled via ".."
 }
 
-const MIN_DELAY_SECONDS = 0.01 // 10 milliseconds
-const MAX_DELAY_SECONDS = 300 // 5 minutes — deliberately far below an hour
-
-// Parses and clamps a delay value. Supports decimals (e.g. "0.1", "0.01")
-// down to MIN_DELAY_SECONDS. Returns null for anything unparseable or out
-// of range — callers should treat null as "reject, ask again" rather than
-// silently clamping, so a mistyped huge number doesn't get quietly
-// rewritten to the max.
+// Parses and clamps a delay value (supports decimals above the floor,
+// e.g. "90.5"). Returns null for anything unparseable or out of range —
+// callers should treat null as "reject, ask again", not "silently clamp".
 function clampDelay(n) {
   const num = typeof n === 'string' ? parseFloat(n.trim().replace(',', '.')) : Number(n)
   if (!Number.isFinite(num)) return null
   if (num < MIN_DELAY_SECONDS || num > MAX_DELAY_SECONDS) return null
-  // Round to 2 decimal places to avoid float noise (0.1 + 0.2 style issues)
-  // while still allowing values as small as 0.01.
   return Math.round(num * 100) / 100
 }
 
@@ -52,4 +52,30 @@ function saveSettings(partial) {
   return updated
 }
 
-module.exports = { loadSettings, saveSettings, clampDelay, MIN_DELAY_SECONDS, MAX_DELAY_SECONDS }
+/**
+ * Returns a guaranteed-valid delay to actually use for sending. Guards
+ * against a stale settings.json holding a value from before the floor
+ * was raised (e.g. an old 0.01s setting saved under a previous version)
+ * — falling back to the floor instead of silently sending near-instantly,
+ * and self-healing the file so this doesn't happen again next time.
+ */
+function getEffectiveDelaySeconds() {
+  const { delaySeconds } = loadSettings()
+  const valid = clampDelay(delaySeconds)
+  if (valid !== null) return valid
+
+  logger.error(
+    `Stored delaySeconds (${delaySeconds}) is invalid or below the current minimum (${MIN_DELAY_SECONDS}s). Falling back to ${MIN_DELAY_SECONDS}s and correcting settings.json.`
+  )
+  saveSettings({ delaySeconds: MIN_DELAY_SECONDS })
+  return MIN_DELAY_SECONDS
+}
+
+module.exports = {
+  loadSettings,
+  saveSettings,
+  clampDelay,
+  getEffectiveDelaySeconds,
+  MIN_DELAY_SECONDS,
+  MAX_DELAY_SECONDS,
+}
